@@ -8,7 +8,7 @@ import requests
 def send_discord(embed_data):
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
     if not webhook_url:
-        print("Error: DISCORD_WEBHOOK_URL이 설정되지 않았습니다.")
+        print("Error: DISCORD_WEBHOOK_URL 미설정")
         return
 
     payload = {
@@ -25,10 +25,8 @@ def send_discord(embed_data):
 
 
 def check_jobs():
-    # 감시할 키워드 목록
     target_keywords = ["전문군무", "전문경력", "경력경쟁"]
 
-    # 한국 시간(KST) 기준 날짜 설정
     tz_kst = datetime.timezone(datetime.timedelta(hours=9))
     now_kst = datetime.datetime.now(tz_kst)
     yesterday_kst = now_kst - datetime.timedelta(days=1)
@@ -45,6 +43,7 @@ def check_jobs():
         "Referer": "https://www.gojobs.go.kr/main.do",
     }
 
+    scraped_titles = []
     matched_jobs = []
 
     try:
@@ -65,7 +64,9 @@ def check_jobs():
             title = title_elem.get_text(strip=True)
             row_text = " ".join([c.get_text(strip=True) for c in cols])
 
-            # 키워드 포함 여부 및 작성일(어제) 확인
+            if title and len(title) > 2:
+                scraped_titles.append(title)
+
             if any(kw in title for kw in target_keywords):
                 if target_date_str in row_text:
                     href = title_elem.get("href", "")
@@ -84,7 +85,7 @@ def check_jobs():
     except Exception as e:
         print(f"수집 중 오류 발생: {e}")
 
-    # 조건에 부합하는 신규 공고가 있을 때만 디스코드 발송
+    # 디스코드 메시지 전송
     if matched_jobs:
         fields = [
             {
@@ -96,14 +97,29 @@ def check_jobs():
         ]
         embed_data = {
             "title": "📢 [국방부 군무원] 신규 채용공고 알림",
-            "description": f"**등록일:** `{target_date_str}`\n설정한 조건에 부합하는 신규 공고가 등록되었습니다.",
+            "description": f"**등록일:** `{target_date_str}`\n설정한 조건에 부합하는 신규 공고가 감지되었습니다!",
             "color": 3447003,
             "fields": fields,
             "timestamp": now_kst.isoformat(),
         }
-        send_discord(embed_data)
     else:
-        print("신규 조건 공고가 없어 알림을 보내지 않았습니다.")
+        sample_list = (
+            "\n".join([f"• {t}" for t in scraped_titles[:5]])
+            if scraped_titles
+            else "공고 목록을 정상적으로 불러왔으나 표시할 항목이 없습니다."
+        )
+        embed_data = {
+            "title": "🔔 [국방부 군무원] 일일 모니터링 정상 작동 보고",
+            "description": (
+                f"**조회 일자 기준(어제):** `{target_date_str}`\n"
+                f"**상태:** 조건 키워드(`전문군무`, `전문경력`, `경력경쟁`)의 신규 등록 공고가 없습니다.\n\n"
+                f"**현재 게시판 최신 공고 목록 (수집 정상 확인용):**\n{sample_list}"
+            ),
+            "color": 65280,
+            "timestamp": now_kst.isoformat(),
+        }
+
+    send_discord(embed_data)
 
 
 if __name__ == "__main__":
