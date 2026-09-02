@@ -2,6 +2,7 @@ import datetime
 import os
 import re
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 import requests
 
 
@@ -34,23 +35,33 @@ def check_jobs():
 
     target_url = "https://www.gojobs.go.kr/apmList.do?menuNo=401&mngrMenuYn=N&selMenuNo=400&upperMenuNo=&wd=1360"
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Referer": "https://www.gojobs.go.kr/main.do",
-    }
-
     scraped_titles = []
     matched_jobs = []
 
     try:
-        res = requests.get(target_url, headers=headers, timeout=15)
-        res.encoding = "utf-8"
-        soup = BeautifulSoup(res.text, "html.parser")
+        # Playwright를 사용해 실제 크롬 브라우저 환경으로 접속
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                )
+            )
+            page = context.new_page()
 
+            # 메인 페이지 접속 후 게시판으로 이동하여 자바스크립트 완전 로딩 대기
+            page.goto("https://www.gojobs.go.kr/main.do", timeout=30000)
+            page.goto(target_url, timeout=30000)
+            page.wait_for_selector("table", timeout=15000)
+
+            html = page.content()
+            browser.close()
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        # 테이블 행 추출
         rows = soup.find_all("tr")
         for row in rows:
             cols = row.find_all(["td", "th"])
@@ -67,6 +78,7 @@ def check_jobs():
             if title and len(title) > 2:
                 scraped_titles.append(title)
 
+            # 조건 검사: 키워드 포함 + 어제 자 날짜 확인
             if any(kw in title for kw in target_keywords):
                 if target_date_str in row_text:
                     href = title_elem.get("href", "")
@@ -83,9 +95,9 @@ def check_jobs():
                         matched_jobs.append({"title": title, "link": link})
 
     except Exception as e:
-        print(f"수집 중 오류 발생: {e}")
+        print(f"Playwright 브라우저 수집 중 오류 발생: {e}")
 
-    # 디스코드 메시지 전송
+    # 디스코드 결과 전송
     if matched_jobs:
         fields = [
             {
@@ -106,14 +118,14 @@ def check_jobs():
         sample_list = (
             "\n".join([f"• {t}" for t in scraped_titles[:5]])
             if scraped_titles
-            else "공고 목록을 정상적으로 불러왔으나 표시할 항목이 없습니다."
+            else "실제 브라우저 렌더링 후에도 게시물 목록이 비어있습니다."
         )
         embed_data = {
-            "title": "🔔 [국방부 군무원] 일일 모니터링 정상 작동 보고",
+            "title": "🔔 [국방부 군무원] 브라우저 모니터링 수집 보고",
             "description": (
                 f"**조회 일자 기준(어제):** `{target_date_str}`\n"
                 f"**상태:** 조건 키워드(`전문군무`, `전문경력`, `경력경쟁`)의 신규 등록 공고가 없습니다.\n\n"
-                f"**현재 게시판 최신 공고 목록 (수집 정상 확인용):**\n{sample_list}"
+                f"**실제 화면에서 수집된 최신 공고 제목 (상위 5개):**\n{sample_list}"
             ),
             "color": 65280,
             "timestamp": now_kst.isoformat(),
