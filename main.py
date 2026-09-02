@@ -1,7 +1,6 @@
 import datetime
 import os
 import re
-import sys
 from bs4 import BeautifulSoup
 import requests
 
@@ -9,38 +8,29 @@ import requests
 def send_discord(embed_data):
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
     if not webhook_url:
-        print("Error: DISCORD_WEBHOOK_URL이 설정되지 않았습니다.")
-        return False
+        return
 
     payload = {
         "username": "국방부 채용 알림봇",
         "avatar_url": "https://www.gojobs.go.kr/images/common/logo.gif",
         "embeds": [embed_data],
     }
-
-    try:
-        res = requests.post(webhook_url, json=payload, timeout=10)
-        print(f"Discord Response: {res.status_code}")
-        return res.status_code in [200, 204]
-    except Exception as e:
-        print(f"Discord 전송 실패: {e}")
-        return False
+    requests.post(webhook_url, json=payload)
 
 
 def check_jobs():
     target_keywords = ["전문군무", "전문경력", "경력경쟁"]
 
-    # KST (한국 시간) 기준
     tz_kst = datetime.timezone(datetime.timedelta(hours=9))
     now_kst = datetime.datetime.now(tz_kst)
-
-    # 어제 날짜 (YYYY-MM-DD)
     yesterday_kst = now_kst - datetime.timedelta(days=1)
-    target_date_str = yesterday_kst.strftime("%Y-%m-%d")
 
-    found_jobs = []
+    # 파악 가능한 여러 날짜 형태 준비
+    date_format_1 = yesterday_kst.strftime("%Y-%m-%d")  # 2026-09-01
+    date_format_2 = yesterday_kst.strftime("%Y.%m.%d")  # 2026.09.01
+    date_format_3 = yesterday_kst.strftime("%m-%d")  # 09-01
+
     base_url = "https://www.gojobs.go.kr/apmList.do"
-
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -49,9 +39,10 @@ def check_jobs():
         )
     }
 
-    print(f"--- 모니터링 시작 (기준 날짜: {target_date_str}) ---")
+    recent_samples = []
+    matched_jobs = []
 
-    for page in range(1, 11):
+    for page in range(1, 4):
         payload = {"pageIndex": str(page), "s_apmMenuSeq": "2"}
         try:
             res = requests.post(
@@ -70,60 +61,63 @@ def check_jobs():
                     continue
 
                 title = title_elem.get_text(strip=True)
-                row_text = row.get_text()
+                full_row_str = " | ".join(
+                    [c.get_text(strip=True) for c in cols]
+                )
 
-                # 키워드 검사
+                # 상위 5개 공고 원본 형태 기록
+                if len(recent_samples) < 5:
+                    recent_samples.append(full_row_str)
+
+                # 키워드 확인
                 if any(kw in title for kw in target_keywords):
-                    # 어제 날짜 검사
-                    if target_date_str in row_text:
+                    # 날짜 형식 중 하나라도 걸리는지 확인
+                    if any(
+                        df in full_row_str
+                        for df in [date_format_1, date_format_2, date_format_3]
+                    ):
                         href = title_elem.get("href", "")
                         seq_match = re.search(r"\d+", href)
-
-                        if seq_match:
-                            seq = seq_match.group()
-                            link = f"https://www.gojobs.go.kr/apmView.do?apmSeq={seq}"
-                        else:
-                            link = base_url
-
-                        found_jobs.append({"title": title, "link": link})
+                        seq = seq_match.group() if seq_match else ""
+                        link = (
+                            f"https://www.gojobs.go.kr/apmView.do?apmSeq={seq}"
+                            if seq
+                            else base_url
+                        )
+                        matched_jobs.append({"title": title, "link": link})
         except Exception as e:
-            print(f"{page}페이지 수집 중 예외 발생: {e}")
+            print(f"Error: {e}")
 
-    # 결과 전송
-    if found_jobs:
+    # 디스코드 보고서 작성
+    if matched_jobs:
         fields = [
             {
-                "name": f"📌 {job['title']}",
-                "value": f"[👉 해당 채용공고 바로가기]({job['link']})",
+                "name": f"📌 {j['title']}",
+                "value": f"[👉 바로가기]({j['link']})",
                 "inline": False,
             }
-            for job in found_jobs
+            for j in matched_jobs
         ]
-
         embed_data = {
-            "title": "📢 [국방부 군무원] 신규 채용공고 알림",
-            "description": f"**등록일:** `{target_date_str}`\n어제 등록된 신규 공고가 발견되었습니다!",
-            "color": 3447003,
+            "title": "🎉 [국방부 군무원] 신규 공고를 찾았습니다!",
+            "description": f"**기준 날짜:** `{date_format_1}`",
+            "color": 3066993,
             "fields": fields,
-            "footer": {"text": "국방부 군무원 채용관리 자동 모니터링"},
-            "timestamp": now_kst.isoformat(),
         }
-        send_discord(embed_data)
     else:
-        print(f"[{target_date_str}] 조건에 맞는 공고가 없습니다.")
-        # 공고가 없더라도 정상 작동 확인을 위해 테스트용 알림 전송 (필요시 아래 3줄 주석 처리 가능)
+        sample_text = "\n".join([f"• `{s}`" for s in recent_samples])
         embed_data = {
-            "title": "✅ [국방부 군무원] 모니터링 정상 작동 중",
-            "description": f"기준 날짜(`{target_date_str}`)에 새로 올라온 공고가 없습니다.",
-            "color": 65280,
-            "timestamp": now_kst.isoformat(),
+            "title": "🔍 [진단 결과] 매칭된 공고가 없습니다.",
+            "description": (
+                f"**프로그램이 계산한 어제 날짜:** `{date_format_1}`\n\n"
+                f"**실제 웹사이트에서 읽어온 상위 공고 목록:**\n{sample_text}\n\n"
+                "위 목록의 날짜 표기와 어제 날짜가 일치하는지 확인해 주세요!"
+            ),
+            "color": 15105570,
         }
-        send_discord(embed_data)
+
+    send_discord(embed_data)
 
 
 if __name__ == "__main__":
-    try:
-        check_jobs()
-    except Exception as err:
-        print(f"최종 에러 발생: {err}")
-        sys.exit(0)  # 에러가 나더라도 GitHub Actions가 실패로 처리하지 않게 방지
+    check_jobs()
