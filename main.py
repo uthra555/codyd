@@ -8,7 +8,7 @@ import requests
 def send_discord(embed_data):
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
     if not webhook_url:
-        print("Error: DISCORD_WEBHOOK_URL이 설정되지 않았습니다.")
+        print("Error: DISCORD_WEBHOOK_URL 미설정")
         return
 
     payload = {
@@ -32,41 +32,27 @@ def check_jobs():
     yesterday_kst = now_kst - datetime.timedelta(days=1)
     target_date_str = yesterday_kst.strftime("%Y-%m-%d")
 
-    base_url = "https://www.gojobs.go.kr/apmList.do"
+    # 전달해주신 정확한 게시판 전체 주소
+    target_url = "https://www.gojobs.go.kr/apmList.do?menuNo=401&mngrMenuYn=N&selMenuNo=400&upperMenuNo=&wd=1360"
 
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Referer": "https://www.gojobs.go.kr/apmList.do?menuNo=401&mngrMenuYn=N&selMenuNo=400&upperMenuNo=&wd=1360",
+        )
     }
 
-    params = {
-        "menuNo": "401",
-        "mngrMenuYn": "N",
-        "selMenuNo": "400",
-        "wd": "1360",
-    }
-
-    payload = {
-        "pageIndex": "1",
-        "menuNo": "401",
-        "mngrMenuYn": "N",
-        "selMenuNo": "400",
-        "wd": "1360",
-    }
-
-    scraped_jobs = []
+    scraped_titles = []
     matched_jobs = []
 
     try:
-        res = requests.post(
-            base_url, params=params, data=payload, headers=headers, timeout=10
-        )
+        # GET 방식으로 지정된 URL에 직접 접속
+        res = requests.get(target_url, headers=headers, timeout=15)
+        res.encoding = "utf-8"  # 한글 깨짐 방지
         soup = BeautifulSoup(res.text, "html.parser")
 
+        # 게시판 테이블 내 모든 행 수집
         rows = soup.find_all("tr")
         for row in rows:
             cols = row.find_all(["td", "th"])
@@ -80,26 +66,29 @@ def check_jobs():
             title = title_elem.get_text(strip=True)
             row_text = " ".join([c.get_text(strip=True) for c in cols])
 
-            href = title_elem.get("href", "")
-            seq_match = re.search(r"\d+", href)
-            seq = seq_match.group() if seq_match else ""
-            link = (
-                f"https://www.gojobs.go.kr/apmView.do?apmSeq={seq}&menuNo=401&mngrMenuYn=N&selMenuNo=400&upperMenuNo=&wd=1360"
-                if seq
-                else base_url
-            )
-
-            scraped_jobs.append(f"• {title} ({row_text[-10:] if len(row_text)>=10 else row_text})")
+            if title and len(title) > 2:
+                scraped_titles.append(f"{title} ({row_text[-10:]})")
 
             # 키워드 및 어제 날짜 확인
             if any(kw in title for kw in target_keywords):
                 if target_date_str in row_text:
-                    matched_jobs.append({"title": title, "link": link})
+                    href = title_elem.get("href", "")
+                    seq_match = re.search(r"\d+", href)
+                    seq = seq_match.group() if seq_match else ""
+
+                    link = (
+                        f"https://www.gojobs.go.kr/apmView.do?apmSeq={seq}&menuNo=401&mngrMenuYn=N&selMenuNo=400&upperMenuNo=&wd=1360"
+                        if seq
+                        else target_url
+                    )
+
+                    if not any(j["title"] == title for j in matched_jobs):
+                        matched_jobs.append({"title": title, "link": link})
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"수집 에러: {e}")
 
-    # 디스코드 전송 (매칭 결과가 없어도 무조건 보고서 메시지 전송)
+    # 디스코드 메시지 작성 (조건 매칭 또는 수집 결과 진단 포함)
     if matched_jobs:
         fields = [
             {
@@ -110,22 +99,26 @@ def check_jobs():
             for job in matched_jobs
         ]
         embed_data = {
-            "title": "📢 [국방부 군무원] 신규 채용공고 등록 알림",
-            "description": f"**기준 등록일:** `{target_date_str}`\n신규 공고가 감지되었습니다!",
+            "title": "📢 [국방부 군무원] 신규 채용공고 알림",
+            "description": f"**등록일:** `{target_date_str}`\n조건에 부합하는 신규 공고가 등록되었습니다.",
             "color": 3447003,
             "fields": fields,
             "timestamp": now_kst.isoformat(),
         }
     else:
-        sample_list = "\n".join(scraped_jobs[:5]) if scraped_jobs else "수집된 공고 없음"
+        sample_text = (
+            "\n".join([f"• {t}" for t in scraped_titles[:5]])
+            if scraped_titles
+            else "공고 목록을 읽어오지 못했습니다."
+        )
         embed_data = {
             "title": "🔔 [국방부 군무원] 모니터링 실행 완료",
             "description": (
-                f"**기준 등록일(어제):** `{target_date_str}`\n"
-                f"**상태:** 조건 키워드(`전문군무`, `전문경력`, `경력경쟁`)에 맞는 신규 공고가 없습니다.\n\n"
-                f"**현재 사이트 상위 공고 목록:**\n{sample_list}"
+                f"**접속 주소:** `{target_url}`\n"
+                f"**기준 등록일(어제):** `{target_date_str}`\n\n"
+                f"**사이트에서 직접 읽어온 최근 공고 목록:**\n{sample_text}"
             ),
-            "color": 15105570,
+            "color": 65280,
             "timestamp": now_kst.isoformat(),
         }
 
