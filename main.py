@@ -25,25 +25,20 @@ def send_discord(embed_data):
 
 
 def check_jobs():
+    # 감지 대상 키워드 (제목 중간 포함 시에도 검출)
     target_keywords = ["전문군무", "전문경력", "경력경쟁"]
 
-    # 한국 시간(KST) 기준 날짜 구하기
+    # 한국 표준시(KST, UTC+9) 설정
     tz_kst = datetime.timezone(datetime.timedelta(hours=9))
-    now = datetime.datetime.now(tz_kst)
-    yesterday = now - datetime.timedelta(days=1)
+    now_kst = datetime.datetime.now(tz_kst)
 
-    # 다양한 날짜 포맷 대응 (2026-09-01, 2026.09.01, 09-01, 09.01 등)
-    date_patterns = [
-        yesterday.strftime("%Y-%m-%d"),
-        yesterday.strftime("%Y.%m.%d"),
-        yesterday.strftime("%m-%d"),
-        yesterday.strftime("%m.%d"),
-    ]
+    # 어제 날짜 구하기 (YYYY-MM-DD 포맷: 예 '2026-09-01')
+    yesterday_kst = now_kst - datetime.timedelta(days=1)
+    target_date_str = yesterday_kst.strftime("%Y-%m-%d")
 
     found_jobs = []
     base_url = "https://www.gojobs.go.kr/apmList.do"
 
-    # User-Agent 설정 (브라우저 접근으로 위장)
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -53,9 +48,10 @@ def check_jobs():
     }
 
     print(
-        f"수집 시작 (기준 어제 날짜 패턴: {date_patterns}, 키워드: {target_keywords})"
+        f"수집 시작 (기준 어제 날짜: {target_date_str}, 키워드: {target_keywords})"
     )
 
+    # 1페이지부터 10페이지까지 순회
     for page in range(1, 11):
         payload = {"pageIndex": str(page), "s_apmMenuSeq": "2"}
         try:
@@ -66,19 +62,21 @@ def check_jobs():
 
             rows = soup.select("table tbody tr")
             for row in rows:
-                row_text = row.get_text()
+                cols = row.select("td")
+                if len(cols) < 2:
+                    continue
 
-                # 제목 요소 찾기
                 title_elem = row.select_one("a")
                 if not title_elem:
                     continue
 
                 title = title_elem.get_text(strip=True)
+                row_text = row.get_text()
 
-                # 1. 키워드 검사
+                # 1. 키워드 포함 검사 (제목 중간 포함 가능)
                 if any(kw in title for kw in target_keywords):
-                    # 2. 날짜 검사 (행 전체 텍스트에 어제 날짜 패턴이 있는지)
-                    if any(dp in row_text for dp in date_patterns):
+                    # 2. 어제 날짜(YYYY-MM-DD) 등록 여부 검사
+                    if target_date_str in row_text:
                         href = title_elem.get("href", "")
                         seq_match = re.search(r"\d+", href)
 
@@ -92,7 +90,7 @@ def check_jobs():
         except Exception as e:
             print(f"{page}페이지 수집 중 에러 발생: {e}")
 
-    # 결과 전송 (공고가 없더라도 테스트 확인용 메시지를 디스코드로 발송)
+    # 디스코드 임베드 알림 전송
     if found_jobs:
         fields = []
         for job in found_jobs:
@@ -106,27 +104,16 @@ def check_jobs():
 
         embed_data = {
             "title": "📢 [국방부 군무원] 신규 채용공고 알림",
-            "description": f"**기준 날짜:** `{date_patterns[0]}`\n조건에 맞는 신규 공고를 찾았습니다!",
-            "color": 3447003,
+            "description": f"**등록일:** `{target_date_str}`\n어제 등록된 신규 공고 검색 결과입니다.",
+            "color": 3447003,  # 블루 컬러
             "fields": fields,
             "footer": {"text": "국방부 군무원 채용관리 자동 모니터링"},
-            "timestamp": now.isoformat(),
+            "timestamp": now_kst.isoformat(),
         }
+        send_discord(embed_data)
+        print(f"총 {len(found_jobs)}건의 공고 알림 전송 완료!")
     else:
-        # 공고가 없을 때도 디스코드 연결 테스트 겸 확인 알림을 보냅니다.
-        embed_data = {
-            "title": "🔍 [국방부 군무원] 모니터링 정기 점검",
-            "description": (
-                f"**점검 시각:** `{now.strftime('%Y-%m-%d %H:%M:%S')}`\n"
-                f"사이트 탐색을 완료했으나 어제 날짜(`{date_patterns[0]}`) 기준 "
-                f"키워드(`{', '.join(target_keywords)}`)에 매칭되는 신규 공고가 없습니다."
-            ),
-            "color": 15105570,  # 주황색
-            "footer": {"text": "정상 작동 중"},
-            "timestamp": now.isoformat(),
-        }
-
-    send_discord(embed_data)
+        print(f"{target_date_str} 날짜의 해당 키워드 공고가 없습니다.")
 
 
 if __name__ == "__main__":
