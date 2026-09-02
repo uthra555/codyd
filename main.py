@@ -26,8 +26,11 @@ def send_discord(embed_data):
 
 
 def check_jobs():
-    target_keywords = ["전문군무", "전문경력", "경력경쟁"]
+    # 필터 키워드 설정
+    include_keywords = ["전문군무", "전문경력", "경력경쟁"]
+    exclude_keyword = "합격자"
 
+    # 한국 시간(KST) 기준 날짜 계산: 매일 오전 9시 실행 시 '어제 날짜' 추출
     tz_kst = datetime.timezone(datetime.timedelta(hours=9))
     now_kst = datetime.datetime.now(tz_kst)
     yesterday_kst = now_kst - datetime.timedelta(days=1)
@@ -35,11 +38,10 @@ def check_jobs():
 
     target_url = "https://www.gojobs.go.kr/apmList.do?menuNo=401&mngrMenuYn=N&selMenuNo=400&upperMenuNo=&wd=1360"
 
-    scraped_titles = []
     matched_jobs = []
 
     try:
-        # Playwright를 사용해 실제 크롬 브라우저 환경으로 접속
+        # Playwright를 사용하여 브라우저 렌더링 수집
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
@@ -51,7 +53,6 @@ def check_jobs():
             )
             page = context.new_page()
 
-            # 메인 페이지 접속 후 게시판으로 이동하여 자바스크립트 완전 로딩 대기
             page.goto("https://www.gojobs.go.kr/main.do", timeout=30000)
             page.goto(target_url, timeout=30000)
             page.wait_for_selector("table", timeout=15000)
@@ -61,7 +62,6 @@ def check_jobs():
 
         soup = BeautifulSoup(html, "html.parser")
 
-        # 테이블 행 추출
         rows = soup.find_all("tr")
         for row in rows:
             cols = row.find_all(["td", "th"])
@@ -75,29 +75,35 @@ def check_jobs():
             title = title_elem.get_text(strip=True)
             row_text = " ".join([c.get_text(strip=True) for c in cols])
 
-            if title and len(title) > 2:
-                scraped_titles.append(title)
+            # 1. '어제 올라온 공고'인지 확인 (등록일 비교)
+            if target_date_str not in row_text:
+                continue
 
-            # 조건 검사: 키워드 포함 + 어제 자 날짜 확인
-            if any(kw in title for kw in target_keywords):
-                if target_date_str in row_text:
-                    href = title_elem.get("href", "")
-                    seq_match = re.search(r"\d+", href)
-                    seq = seq_match.group() if seq_match else ""
+            # 2. 제외 키워드('합격자')가 포함되어 있으면 스킵
+            if exclude_keyword in title:
+                continue
 
-                    link = (
-                        f"https://www.gojobs.go.kr/apmView.do?apmSeq={seq}&menuNo=401&mngrMenuYn=N&selMenuNo=400&upperMenuNo=&wd=1360"
-                        if seq
-                        else target_url
+            # 3. 포함 키워드('전문군무', '전문경력', '경력경쟁') 중 하나라도 포함 시 수집
+            if any(kw in title for kw in include_keywords):
+                href = title_elem.get("href", "")
+                seq_match = re.search(r"\d+", href)
+                seq = seq_match.group() if seq_match else ""
+
+                link = (
+                    f"https://www.gojobs.go.kr/apmView.do?apmSeq={seq}&menuNo=401&mngrMenuYn=N&selMenuNo=400&upperMenuNo=&wd=1360"
+                    if seq
+                    else target_url
+                )
+
+                if not any(j["title"] == title for j in matched_jobs):
+                    matched_jobs.append(
+                        {"title": title, "link": link, "date": target_date_str}
                     )
 
-                    if not any(j["title"] == title for j in matched_jobs):
-                        matched_jobs.append({"title": title, "link": link})
-
     except Exception as e:
-        print(f"Playwright 브라우저 수집 중 오류 발생: {e}")
+        print(f"수집 중 오류 발생: {e}")
 
-    # 디스코드 결과 전송
+    # 어제 등록된 조건에 맞는 공고가 있을 때만 디스코드 알림 발송
     if matched_jobs:
         fields = [
             {
@@ -108,30 +114,22 @@ def check_jobs():
             for job in matched_jobs
         ]
         embed_data = {
-            "title": "📢 [국방부 군무원] 신규 채용공고 알림",
-            "description": f"**등록일:** `{target_date_str}`\n설정한 조건에 부합하는 신규 공고가 감지되었습니다!",
+            "title": "📢 [국방부 군무원] 어제 등록된 신규 채용공고 알림",
+            "description": (
+                f"**등록일:** `{target_date_str}`\n"
+                "**포함 키워드:** `전문군무`, `전문경력`, `경력경쟁`\n"
+                "**제외 키워드:** `합격자` 제외 완료\n\n"
+                "조건에 부합하는 신규 공고가 감지되었습니다!"
+            ),
             "color": 3447003,
             "fields": fields,
             "timestamp": now_kst.isoformat(),
         }
+        send_discord(embed_data)
     else:
-        sample_list = (
-            "\n".join([f"• {t}" for t in scraped_titles[:5]])
-            if scraped_titles
-            else "실제 브라우저 렌더링 후에도 게시물 목록이 비어있습니다."
+        print(
+            f"[{target_date_str}] 어제 등록된 조건 부합 공고가 없어 알림을 전송하지 않았습니다."
         )
-        embed_data = {
-            "title": "🔔 [국방부 군무원] 브라우저 모니터링 수집 보고",
-            "description": (
-                f"**조회 일자 기준(어제):** `{target_date_str}`\n"
-                f"**상태:** 조건 키워드(`전문군무`, `전문경력`, `경력경쟁`)의 신규 등록 공고가 없습니다.\n\n"
-                f"**실제 화면에서 수집된 최신 공고 제목 (상위 5개):**\n{sample_list}"
-            ),
-            "color": 65280,
-            "timestamp": now_kst.isoformat(),
-        }
-
-    send_discord(embed_data)
 
 
 if __name__ == "__main__":
