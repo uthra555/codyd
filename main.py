@@ -26,7 +26,7 @@ def send_discord(embed_data):
 
 
 def check_jobs():
-    target_keywords = ["전문군무", "전문경력"]
+    target_keywords = ["전문군무", "전문경력", "경력경쟁"]
 
     # 한국 시간(KST) 기준 어제 날짜 구하기
     tz_kst = datetime.timezone(datetime.timedelta(hours=9))
