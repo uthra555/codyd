@@ -6,7 +6,6 @@ import requests
 
 
 def send_discord(embed_data):
-    """디스코드 임베드(Embed) 형태로 예쁘게 전송하는 함수"""
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
     if not webhook_url:
         print("디스코드 웹훅 URL이 설정되지 않았습니다.")
@@ -14,7 +13,7 @@ def send_discord(embed_data):
 
     payload = {
         "username": "국방부 채용 알림봇",
-        "avatar_url": "https://www.gojobs.go.kr/images/common/logo.gif",  # 로고 이미지
+        "avatar_url": "https://www.gojobs.go.kr/images/common/logo.gif",
         "embeds": [embed_data],
     }
 
@@ -28,44 +27,58 @@ def send_discord(embed_data):
 def check_jobs():
     target_keywords = ["전문군무", "전문경력", "경력경쟁"]
 
-    # 한국 시간(KST) 기준 어제 날짜 구하기
+    # 한국 시간(KST) 기준 날짜 구하기
     tz_kst = datetime.timezone(datetime.timedelta(hours=9))
-    yesterday = datetime.datetime.now(tz_kst) - datetime.timedelta(days=1)
-    yesterday_str1 = yesterday.strftime("%Y-%m-%d")
-    yesterday_str2 = yesterday.strftime("%Y.%m.%d")
+    now = datetime.datetime.now(tz_kst)
+    yesterday = now - datetime.timedelta(days=1)
+
+    # 다양한 날짜 포맷 대응 (2026-09-01, 2026.09.01, 09-01, 09.01 등)
+    date_patterns = [
+        yesterday.strftime("%Y-%m-%d"),
+        yesterday.strftime("%Y.%m.%d"),
+        yesterday.strftime("%m-%d"),
+        yesterday.strftime("%m.%d"),
+    ]
 
     found_jobs = []
     base_url = "https://www.gojobs.go.kr/apmList.do"
 
-    print(f"수집 시작 (기준 어제 날짜: {yesterday_str1})")
+    # User-Agent 설정 (브라우저 접근으로 위장)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
 
-    # 1페이지부터 10페이지까지 순회
+    print(
+        f"수집 시작 (기준 어제 날짜 패턴: {date_patterns}, 키워드: {target_keywords})"
+    )
+
     for page in range(1, 11):
         payload = {"pageIndex": str(page), "s_apmMenuSeq": "2"}
         try:
-            res = requests.post(base_url, data=payload, timeout=10)
+            res = requests.post(
+                base_url, data=payload, headers=headers, timeout=10
+            )
             soup = BeautifulSoup(res.text, "html.parser")
 
             rows = soup.select("table tbody tr")
             for row in rows:
-                cols = row.select("td")
-                if len(cols) < 2:
-                    continue
+                row_text = row.get_text()
 
+                # 제목 요소 찾기
                 title_elem = row.select_one("a")
                 if not title_elem:
                     continue
 
                 title = title_elem.get_text(strip=True)
-                row_text = row.get_text()
 
-                # 키워드 검사 (전문군무 OR 전문경력)
+                # 1. 키워드 검사
                 if any(kw in title for kw in target_keywords):
-                    # 어제 날짜로 등록된 공고인지 확인
-                    if (
-                        yesterday_str1 in row_text
-                        or yesterday_str2 in row_text
-                    ):
+                    # 2. 날짜 검사 (행 전체 텍스트에 어제 날짜 패턴이 있는지)
+                    if any(dp in row_text for dp in date_patterns):
                         href = title_elem.get("href", "")
                         seq_match = re.search(r"\d+", href)
 
@@ -79,7 +92,7 @@ def check_jobs():
         except Exception as e:
             print(f"{page}페이지 수집 중 에러 발생: {e}")
 
-    # 디스코드 임베드 카드 형태의 알림 작성
+    # 결과 전송 (공고가 없더라도 테스트 확인용 메시지를 디스코드로 발송)
     if found_jobs:
         fields = []
         for job in found_jobs:
@@ -92,19 +105,28 @@ def check_jobs():
             )
 
         embed_data = {
-            "title": f"📢 [국방부 군무원] 신규 채용공고 알림",
-            "description": f"**등록일:** `{yesterday_str1}`\n어제 등록된 조건('전문군무', '전문경력') 검색 결과입니다.",
-            "color": 3447003,  # 디스코드 블루 컬러
+            "title": "📢 [국방부 군무원] 신규 채용공고 알림",
+            "description": f"**기준 날짜:** `{date_patterns[0]}`\n조건에 맞는 신규 공고를 찾았습니다!",
+            "color": 3447003,
             "fields": fields,
-            "footer": {
-                "text": "국방부 군무원 채용관리 자동 모니터링 시스템"
-            },
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "footer": {"text": "국방부 군무원 채용관리 자동 모니터링"},
+            "timestamp": now.isoformat(),
+        }
+    else:
+        # 공고가 없을 때도 디스코드 연결 테스트 겸 확인 알림을 보냅니다.
+        embed_data = {
+            "title": "🔍 [국방부 군무원] 모니터링 정기 점검",
+            "description": (
+                f"**점검 시각:** `{now.strftime('%Y-%m-%d %H:%M:%S')}`\n"
+                f"사이트 탐색을 완료했으나 어제 날짜(`{date_patterns[0]}`) 기준 "
+                f"키워드(`{', '.join(target_keywords)}`)에 매칭되는 신규 공고가 없습니다."
+            ),
+            "color": 15105570,  # 주황색
+            "footer": {"text": "정상 작동 중"},
+            "timestamp": now.isoformat(),
         }
 
-        send_discord(embed_data)
-    else:
-        print("조건에 맞는 어제자 신규 공고가 없습니다.")
+    send_discord(embed_data)
 
 
 if __name__ == "__main__":
