@@ -84,10 +84,18 @@ def check_jobs():
     exclude_keyword = "합격자"
 
     # 한국 시간(KST) 기준 날짜 계산: 매일 오전 9시 실행 시 '어제 날짜' 추출
+    # LOOKBACK_DAYS(기본 1)로 조회 기간을 늘릴 수 있음 (테스트/수동 실행용)
     tz_kst = datetime.timezone(datetime.timedelta(hours=9))
     now_kst = datetime.datetime.now(tz_kst)
-    yesterday_kst = now_kst - datetime.timedelta(days=1)
-    target_date_str = yesterday_kst.strftime("%Y-%m-%d")
+    lookback_days = int(os.environ.get("LOOKBACK_DAYS", "1") or "1")
+    target_dates = [
+        (now_kst - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+        for i in range(1, lookback_days + 1)
+    ]
+    target_date_str = target_dates[0]  # 알림 문구에 쓰이는 대표 날짜(어제)
+    date_range_label = (
+        target_date_str if lookback_days == 1 else f"{target_dates[-1]} ~ {target_dates[0]}"
+    )
 
     target_url = "https://www.gojobs.go.kr/apmList.do?menuNo=401&mngrMenuYn=N&selMenuNo=400&upperMenuNo=&wd=1360"
 
@@ -115,8 +123,9 @@ def check_jobs():
         title = title_elem.get_text(strip=True)
         row_text = " ".join([c.get_text(strip=True) for c in cols])
 
-        # 1. '어제 올라온 공고'인지 확인 (등록일 비교)
-        if target_date_str not in row_text:
+        # 1. 조회 대상 기간(target_dates)에 올라온 공고인지 확인 (등록일 비교)
+        matched_date = next((d for d in target_dates if d in row_text), None)
+        if matched_date is None:
             continue
 
         # 2. 제외 키워드('합격자')가 포함되어 있으면 스킵
@@ -137,7 +146,7 @@ def check_jobs():
 
             if not any(j["title"] == title for j in matched_jobs):
                 matched_jobs.append(
-                    {"title": title, "link": link, "date": target_date_str}
+                    {"title": title, "link": link, "date": matched_date}
                 )
 
     # 어제 등록된 조건에 맞는 공고가 있을 때만 디스코드 알림 발송
@@ -145,15 +154,15 @@ def check_jobs():
         fields = [
             {
                 "name": f"📌 {job['title']}",
-                "value": f"[👉 채용공고 바로가기]({job['link']})",
+                "value": f"[👉 채용공고 바로가기]({job['link']}) (등록일: {job['date']})",
                 "inline": False,
             }
             for job in matched_jobs
         ]
         embed_data = {
-            "title": "📢 [국방부 군무원] 어제 등록된 신규 채용공고 알림",
+            "title": "📢 [국방부 군무원] 신규 채용공고 알림",
             "description": (
-                f"**등록일:** `{target_date_str}`\n"
+                f"**조회 기간:** `{date_range_label}`\n"
                 "**포함 키워드:** `전문군무`, `전문경력`, `경력경쟁`\n"
                 "**제외 키워드:** `합격자` 제외 완료\n\n"
                 "조건에 부합하는 신규 공고가 감지되었습니다!"
@@ -165,7 +174,7 @@ def check_jobs():
         send_discord(embed_data)
     else:
         print(
-            f"[{target_date_str}] 어제 등록된 조건 부합 공고가 없어 알림을 전송하지 않았습니다."
+            f"[{date_range_label}] 조건 부합 공고가 없어 알림을 전송하지 않았습니다."
         )
 
 
