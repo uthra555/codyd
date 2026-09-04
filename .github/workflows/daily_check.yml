@@ -6,7 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       lookback_days:
-        description: '조회할 기간(일). 기본값 1 = 어제 하루만 조회'
+        description: '조회할 기간(일). 기본값 1 = 하루만 조회'
+        required: false
+        default: '1'
+      start_offset:
+        description: '조회 시작 시점(오늘로부터 며칠 전). 기본값 1 = 어제부터. 0 = 오늘부터(테스트용)'
         required: false
         default: '1'
 
@@ -34,4 +38,5 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '1' }}
+          START_OFFSET_DAYS: ${{ github.event.inputs.start_offset || '1' }}
         run: python main.py

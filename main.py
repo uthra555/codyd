@@ -132,9 +132,10 @@ def check_jobs():
     tz_kst = datetime.timezone(datetime.timedelta(hours=9))
     now_kst = datetime.datetime.now(tz_kst)
     lookback_days = int(os.environ.get("LOOKBACK_DAYS", "1") or "1")
+    start_offset_days = int(os.environ.get("START_OFFSET_DAYS", "1") or "1")
     target_dates = [
         (now_kst - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
-        for i in range(1, lookback_days + 1)
+        for i in range(start_offset_days, start_offset_days + lookback_days)
     ]
     oldest_target_date = target_dates[-1]
     date_range_label = (
