@@ -44,10 +44,37 @@ def send_error_alert(error_message):
     send_discord(embed_data)
 
 
-def fetch_job_list_html(target_url):
+def extract_rows(html):
+    soup = BeautifulSoup(html, "html.parser")
+    rows = []
+    for row in soup.find_all("tr"):
+        cols = row.find_all(["td", "th"])
+        if len(cols) < 2:
+            continue
+        title_elem = row.find("a")
+        if not title_elem:
+            continue
+        title = title_elem.get_text(strip=True)
+        row_text = " ".join([c.get_text(strip=True) for c in cols])
+        date_match = re.search(r"\d{4}-\d{2}-\d{2}", row_text)
+        reg_date = date_match.group() if date_match else None
+        rows.append(
+            {
+                "title": title,
+                "row_text": row_text,
+                "reg_date": reg_date,
+                "href": title_elem.get("href", ""),
+            }
+        )
+    return rows
+
+
+def fetch_job_rows(target_url, oldest_target_date, max_pages):
+    """페이지 1부터 순회하며 행을 모은다. 등록일이 오래된 페이지가 나오면 조기 종료."""
     last_error = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
+            all_rows = []
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
                 context = browser.new_context(
@@ -67,10 +94,27 @@ def fetch_job_list_html(target_url):
                 page.goto(target_url, timeout=60000, wait_until="domcontentloaded")
                 page.wait_for_selector("table", timeout=30000)
 
-                html = page.content()
+                for page_num in range(1, max_pages + 1):
+                    if page_num > 1:
+                        with page.expect_navigation(timeout=30000):
+                            page.evaluate(f"fn_egov_link_page({page_num})")
+                        page.wait_for_selector("table", timeout=30000)
+
+                    rows = extract_rows(page.content())
+                    if not rows:
+                        break
+                    all_rows.extend(rows)
+
+                    oldest_on_page = min(
+                        (r["reg_date"] for r in rows if r["reg_date"]), default=None
+                    )
+                    if oldest_on_page and oldest_on_page < oldest_target_date:
+                        # 등록일 내림차순 정렬이므로 다음 페이지는 전부 더 오래됨
+                        break
+
                 browser.close()
 
-            return html
+            return all_rows
         except Exception as e:
             last_error = e
             print(f"[시도 {attempt}/{MAX_ATTEMPTS}] 페이지 로딩 실패: {e}")
@@ -92,36 +136,30 @@ def check_jobs():
         (now_kst - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
         for i in range(1, lookback_days + 1)
     ]
-    target_date_str = target_dates[0]  # 알림 문구에 쓰이는 대표 날짜(어제)
+    oldest_target_date = target_dates[-1]
     date_range_label = (
-        target_date_str if lookback_days == 1 else f"{target_dates[-1]} ~ {target_dates[0]}"
+        target_dates[0] if lookback_days == 1 else f"{target_dates[-1]} ~ {target_dates[0]}"
     )
+
+    # 조회 기간이 며칠 안 되면 페이지도 조금만, 길면 조금 더 넉넉히 순회 (성능/안전 상한)
+    max_pages = min(30, lookback_days * 3 + 2)
 
     target_url = "https://www.gojobs.go.kr/apmList.do?menuNo=401&mngrMenuYn=N&selMenuNo=400&upperMenuNo=&wd=1360"
 
     matched_jobs = []
 
     try:
-        html = fetch_job_list_html(target_url)
+        rows = fetch_job_rows(target_url, oldest_target_date, max_pages)
     except Exception as e:
         print(f"수집 중 오류 발생: {e}")
         send_error_alert(str(e))
         return
 
-    soup = BeautifulSoup(html, "html.parser")
+    print(f"총 {len(rows)}개 공고 행 수집 완료 (최대 {max_pages}페이지 순회)")
 
-    rows = soup.find_all("tr")
     for row in rows:
-        cols = row.find_all(["td", "th"])
-        if len(cols) < 2:
-            continue
-
-        title_elem = row.find("a")
-        if not title_elem:
-            continue
-
-        title = title_elem.get_text(strip=True)
-        row_text = " ".join([c.get_text(strip=True) for c in cols])
+        title = row["title"]
+        row_text = row["row_text"]
 
         # 1. 조회 대상 기간(target_dates)에 올라온 공고인지 확인 (등록일 비교)
         matched_date = next((d for d in target_dates if d in row_text), None)
@@ -134,7 +172,7 @@ def check_jobs():
 
         # 3. 포함 키워드('전문군무', '전문경력', '경력경쟁') 중 하나라도 포함 시 수집
         if any(kw in title for kw in include_keywords):
-            href = title_elem.get("href", "")
+            href = row["href"]
             seq_matches = re.findall(r"\d+", href)
             seq = seq_matches[-1] if seq_matches else ""
 
@@ -149,7 +187,7 @@ def check_jobs():
                     {"title": title, "link": link, "date": matched_date}
                 )
 
-    # 어제 등록된 조건에 맞는 공고가 있을 때만 디스코드 알림 발송
+    # 조건에 맞는 공고가 있을 때만 디스코드 알림 발송
     if matched_jobs:
         fields = [
             {
