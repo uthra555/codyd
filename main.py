@@ -166,8 +166,10 @@ def check_jobs():
         target_dates[0] if lookback_days == 1 else f"{target_dates[-1]} ~ {target_dates[0]}"
     )
 
-    # 조회 기간이 며칠 안 되면 페이지도 조금만, 길면 조금 더 넉넉히 순회 (성능/안전 상한)
-    max_pages = min(30, lookback_days * 3 + 2)
+    # 실제 종료 시점은 아래 fetch_job_rows의 조기 종료 조건(등록일이 조회 대상보다
+    # 오래된 페이지가 나오면 중단)이 결정한다. max_pages는 그게 한 번도 안 걸리는
+    # 이상 상황(날짜 파싱 실패 등)에 대비한 안전 상한선일 뿐이라 넉넉하게 잡는다.
+    max_pages = int(os.environ.get("MAX_PAGES", str(min(200, lookback_days * 20 + 20))))
 
     target_url = "https://www.gojobs.go.kr/apmList.do?menuNo=401&mngrMenuYn=N&selMenuNo=400&upperMenuNo=&wd=1360"
 
