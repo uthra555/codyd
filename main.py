@@ -44,6 +44,30 @@ def send_error_alert(error_message):
     send_discord(embed_data)
 
 
+def build_job_link(href):
+    """목록의 href(javascript:fn_apmView('020','302840') 형태)를 실제 상세페이지 GET 링크로 변환.
+
+    fn_apmView(jobsecode, empmnsn)는 실제로는 listForm을 POST로 제출하는 함수라
+    href 안의 숫자를 그대로 apmSeq 쿼리스트링으로 붙이는 건 잘못된 링크가 된다.
+    같은 파라미터를 GET으로 보내도 서버가 정상 처리하는 것을 확인했으므로 이를 사용한다.
+    """
+    m = re.search(r"fn_apmView\('([^']*)'\s*,\s*'([^']*)'\)", href)
+    if not m:
+        return None
+    jobsecode, empmnsn = m.group(1), m.group(2)
+
+    view_page = "apmView.do"
+    if jobsecode == "060":
+        view_page = "smbView.do"
+    elif jobsecode == "INJAE":
+        view_page = "apmViewNew.do"
+
+    return (
+        f"https://www.gojobs.go.kr/{view_page}?searchJobsecode={jobsecode}"
+        f"&flag=U&empmnsn={empmnsn}&menuNo=401&mngrMenuYn=N&selMenuNo=400&upperMenuNo=&wd=1360"
+    )
+
+
 def extract_rows(html):
     soup = BeautifulSoup(html, "html.parser")
     rows = []
@@ -173,15 +197,7 @@ def check_jobs():
 
         # 3. 포함 키워드('전문군무', '전문경력', '경력경쟁') 중 하나라도 포함 시 수집
         if any(kw in title for kw in include_keywords):
-            href = row["href"]
-            seq_matches = re.findall(r"\d+", href)
-            seq = seq_matches[-1] if seq_matches else ""
-
-            link = (
-                f"https://www.gojobs.go.kr/apmView.do?apmSeq={seq}&menuNo=401&mngrMenuYn=N&selMenuNo=400&upperMenuNo=&wd=1360"
-                if seq
-                else target_url
-            )
+            link = build_job_link(row["href"]) or target_url
 
             if not any(j["title"] == title for j in matched_jobs):
                 matched_jobs.append(
